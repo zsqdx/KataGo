@@ -3,6 +3,7 @@
 #define CUDA_API_PER_THREAD_DEFAULT_STREAM
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
+#include <fstream>
 
 #include "../core/fileutils.h"
 #include "../core/makedir.h"
@@ -42,6 +43,8 @@ struct ComputeContext {
   int nnXLen;
   int nnYLen;
   enabled_t useFP16Mode;
+  enabled_t useINT8Mode;
+  string int8CalibrationCacheFile;
   string homeDataDirOverride;
 };
 
@@ -55,12 +58,17 @@ ComputeContext* NeuralNet::createComputeContext(
   bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
   enabled_t useNHWCMode,
+  enabled_t useINT8Mode,
+  enabled_t useFP8Mode,
+  const string& int8CalibrationCacheFile,
   const LoadedModel* loadedModel) {
   (void)gpuIdxs;
   (void)logger;
   (void)openCLTunerFile;
   (void)openCLReTunePerBoardSize;
   (void)loadedModel;
+  (void)useFP8Mode;
+  (void)int8CalibrationCacheFile;
 
   if(useNHWCMode == enabled_t::True) {
     throw StringError("TensorRT backend: useNHWC = false required, other configurations not supported");
@@ -70,9 +78,52 @@ ComputeContext* NeuralNet::createComputeContext(
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
   context->useFP16Mode = useFP16Mode;
+  context->useINT8Mode = useINT8Mode;
+  context->int8CalibrationCacheFile = int8CalibrationCacheFile;
   context->homeDataDirOverride = homeDataDirOverride;
   return context;
 }
+
+// Simple calibrator that loads and saves calibration cache only
+class Int8CacheCalibrator : public IInt8EntropyCalibrator2 {
+ public:
+  string cacheFile;
+  vector<char> cache;
+
+  Int8CacheCalibrator(const string& file) : cacheFile(file) {
+    try {
+      string contents = FileUtils::readFileBinary(cacheFile);
+      cache.assign(contents.begin(), contents.end());
+    } catch(const StringError& e) {
+      (void)e;
+    }
+  }
+
+  int getBatchSize() const noexcept override { return 0; }
+
+  bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept override {
+    return false;
+  }
+
+  const void* readCalibrationCache(size_t& length) noexcept override {
+    length = cache.size();
+    if(cache.empty())
+      return nullptr;
+    return cache.data();
+  }
+
+  void writeCalibrationCache(const void* ptr, size_t length) noexcept override {
+    cache.assign((const char*)ptr, (const char*)ptr + length);
+    ofstream ofs;
+    try {
+      FileUtils::open(ofs, cacheFile, ios::out | ios::binary);
+      ofs.write(cache.data(), cache.size());
+      ofs.close();
+    } catch(const StringError& e) {
+      (void)e;
+    }
+  }
+};
 
 void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
@@ -1079,6 +1130,7 @@ struct ComputeHandle {
   ComputeContext* ctx;
 
   bool usingFP16;
+  bool usingINT8;
   int maxBatchSize;
   int modelVersion;
   vector<pair<string, string>> debugOutputs;
@@ -1086,6 +1138,7 @@ struct ComputeHandle {
   TRTLogger trtLogger;
   TRTErrorRecorder trtErrorRecorder;
   map<string, void*> buffers;
+  unique_ptr<IInt8Calibrator> calibrator;
   unique_ptr<IRuntime> runtime;
   unique_ptr<ICudaEngine> engine;
   unique_ptr<IExecutionContext> exec;
@@ -1128,6 +1181,18 @@ struct ComputeHandle {
       }
     } else if(ctx->useFP16Mode == enabled_t::True) {
       throw StringError("CUDA device does not support useFP16=true");
+    }
+
+    usingINT8 = false;
+    if(builder->platformHasFastInt8()) {
+      if(ctx->useINT8Mode == enabled_t::True || ctx->useINT8Mode == enabled_t::Auto) {
+        config->setFlag(BuilderFlag::kINT8);
+        usingINT8 = true;
+        calibrator.reset(new Int8CacheCalibrator(ctx->int8CalibrationCacheFile));
+        config->setInt8Calibrator(calibrator.get());
+      }
+    } else if(ctx->useINT8Mode == enabled_t::True) {
+      throw StringError("CUDA device does not support useINT8=true");
     }
     config->setFlag(BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
 
@@ -1292,7 +1357,7 @@ struct ComputeHandle {
       if(timingCacheBlob.size() > 0)
         logger->write("Using existing timing cache at " + timingCacheFile);
       else
-        logger->write("Creating new timing cache (usingFP16=" + Global::boolToString(usingFP16) + " " + Global::intToString(ctx->nnXLen) + "x" + Global::intToString(ctx->nnYLen) + " maxBatchSizeLimit=" + Global::intToString(maxBatchSize) + ")");
+        logger->write("Creating new timing cache (usingFP16=" + Global::boolToString(usingFP16) + " usingINT8=" + Global::boolToString(usingINT8) + " " + Global::intToString(ctx->nnXLen) + "x" + Global::intToString(ctx->nnYLen) + " maxBatchSizeLimit=" + Global::intToString(maxBatchSize) + ")");
 
       auto timingCache =
         unique_ptr<ITimingCache>(config->createTimingCache(timingCacheBlob.data(), timingCacheBlob.size()));
@@ -1487,7 +1552,8 @@ ComputeHandle* NeuralNet::createComputeHandle(
     logger->write(
       "TensorRT backend thread " + Global::intToString(serverThreadIdx) + ": Model version " +
       Global::intToString(loadedModel->modelDesc.modelVersion) +
-      " useFP16 = " + Global::boolToString(handle->usingFP16));
+      " useFP16 = " + Global::boolToString(handle->usingFP16) +
+      " useINT8 = " + Global::boolToString(handle->usingINT8));
     logger->write(
       "TensorRT backend thread " + Global::intToString(serverThreadIdx) +
       ": Model name: " + loadedModel->modelDesc.name);
@@ -1502,6 +1568,10 @@ void NeuralNet::freeComputeHandle(ComputeHandle* gpuHandle) {
 
 bool NeuralNet::isUsingFP16(const ComputeHandle* gpuHandle) {
   return gpuHandle->usingFP16;
+}
+
+bool NeuralNet::isUsingINT8(const ComputeHandle* gpuHandle) {
+  return gpuHandle->usingINT8;
 }
 
 void NeuralNet::printDevices() {

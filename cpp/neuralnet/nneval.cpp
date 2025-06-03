@@ -62,6 +62,9 @@ NNEvaluator::NNEvaluator(
   bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
   enabled_t useNHWCMode,
+  enabled_t useINT8Mode,
+  enabled_t useFP8Mode,
+  const string& int8CalibrationCacheFile,
   int numThr,
   const vector<int>& gpuIdxByServerThr,
   const string& rSeed,
@@ -74,10 +77,13 @@ NNEvaluator::NNEvaluator(
    nnYLen(yLen),
    requireExactNNLen(rExactNNLen),
    policySize(NNPos::getPolicySize(xLen,yLen)),
-   inputsUseNHWC(iUseNHWC),
-   usingFP16Mode(useFP16Mode),
-   usingNHWCMode(useNHWCMode),
-   numThreads(numThr),
+  inputsUseNHWC(iUseNHWC),
+  usingFP16Mode(useFP16Mode),
+  usingNHWCMode(useNHWCMode),
+  usingINT8Mode(useINT8Mode),
+  usingFP8Mode(useFP8Mode),
+  int8CalibrationCacheFile(int8CalibrationCacheFile),
+  numThreads(numThr),
    gpuIdxByServerThread(gpuIdxByServerThr),
    randSeed(rSeed),
    debugSkipNeuralNet(skipNeuralNet),
@@ -143,7 +149,10 @@ NNEvaluator::NNEvaluator(
     computeContext = NeuralNet::createComputeContext(
       gpuIdxs,logger,nnXLen,nnYLen,
       openCLTunerFile,homeDataDirOverride,openCLReTunePerBoardSize,
-      usingFP16Mode,usingNHWCMode,loadedModel
+      usingFP16Mode,usingNHWCMode,
+      usingINT8Mode,usingFP8Mode,
+      int8CalibrationCacheFile,
+      loadedModel
     );
   }
   else {
@@ -294,6 +303,12 @@ enabled_t NNEvaluator::getUsingFP16Mode() const {
 enabled_t NNEvaluator::getUsingNHWCMode() const {
   return usingNHWCMode;
 }
+enabled_t NNEvaluator::getUsingINT8Mode() const {
+  return usingINT8Mode;
+}
+enabled_t NNEvaluator::getUsingFP8Mode() const {
+  return usingFP8Mode;
+}
 
 bool NNEvaluator::supportsShorttermError() const {
   return modelVersion >= 9;
@@ -350,6 +365,15 @@ bool NNEvaluator::isAnyThreadUsingFP16() const {
   return false;
 }
 
+bool NNEvaluator::isAnyThreadUsingINT8() const {
+  lock_guard<std::mutex> lock(bufferMutex);
+  for(const int& isUsingINT8: serverThreadsIsUsingINT8) {
+    if(isUsingINT8)
+      return true;
+  }
+  return false;
+}
+
 static void serveEvals(
   string randSeedThisThread,
   NNEvaluator* nnEval, const LoadedModel* loadedModel,
@@ -380,6 +404,7 @@ void NNEvaluator::spawnServerThreads() {
   {
     lock_guard<std::mutex> lock(bufferMutex);
     serverThreadsIsUsingFP16.resize(numThreads,0);
+    serverThreadsIsUsingINT8.resize(numThreads,0);
   }
 
   queryQueue.unsetReadOnly();
@@ -414,6 +439,7 @@ void NNEvaluator::killServerThreads() {
     delete serverThreads[i];
   serverThreads.clear();
   serverThreadsIsUsingFP16.clear();
+  serverThreadsIsUsingINT8.clear();
 
   //Can unset now that threads are dead
   isKilled = false;
@@ -448,6 +474,8 @@ void NNEvaluator::serve(
     lock_guard<std::mutex> lock(bufferMutex);
     assert(serverThreadIdx < serverThreadsIsUsingFP16.size());
     serverThreadsIsUsingFP16[serverThreadIdx] = gpuHandle == NULL ? 0 : NeuralNet::isUsingFP16(gpuHandle) ? 1 : 0;
+    assert(serverThreadIdx < serverThreadsIsUsingINT8.size());
+    serverThreadsIsUsingINT8[serverThreadIdx] = gpuHandle == NULL ? 0 : NeuralNet::isUsingINT8(gpuHandle) ? 1 : 0;
     numServerThreadsStartingUp--;
     if(numServerThreadsStartingUp <= 0)
       mainThreadWaitingForSpawn.notify_all();
