@@ -471,6 +471,7 @@ ComputeContext* NeuralNet::createComputeContext(
 
   std::function<OpenCLTuneParams(const string&,int)> getParamsForDeviceName =
     [&openCLTunerFile,&homeDataDirOverride,openCLReTunePerBoardSize,logger,nnXLen,nnYLen,useFP16Mode,useINT8Mode,useFP8Mode,int8CalibrationCacheFile,loadedModel](const string& name, int gpuIdxForTuning) {
+    [&openCLTunerFile,&homeDataDirOverride,openCLReTunePerBoardSize,logger,nnXLen,nnYLen,useFP16Mode,useINT8Mode,useFP8Mode,loadedModel](const string& name, int gpuIdxForTuning) {
     bool full = false;
     enabled_t testFP16Mode = useFP16Mode;
     enabled_t testFP16StorageMode = useFP16Mode;
