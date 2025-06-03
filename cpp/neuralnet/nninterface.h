@@ -58,6 +58,9 @@ namespace NeuralNet {
     bool openCLReTunePerBoardSize,
     enabled_t useFP16Mode,
     enabled_t useNHWCMode,
+    enabled_t useINT8Mode,
+    enabled_t useFP8Mode,
+    const std::string& int8CalibrationCacheFile,
     const LoadedModel* loadedModel
   );
   //A ComputeContext should NOT be freed until all ComputeHandles created using it have also been freed.
@@ -85,6 +88,7 @@ namespace NeuralNet {
   void freeComputeHandle(ComputeHandle* computeHandle);
 
   bool isUsingFP16(const ComputeHandle* computeHandle);
+  bool isUsingINT8(const ComputeHandle* computeHandle);
 
   //Input Buffers ---------------------------------------------------------------
 

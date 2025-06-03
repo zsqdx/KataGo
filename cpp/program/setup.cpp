@@ -247,6 +247,32 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     else if(cfg.contains("useNHWC"))
       useNHWCMode = cfg.getEnabled("useNHWC");
 
+    enabled_t useINT8Mode = enabled_t::Auto;
+    if(cfg.contains(backendPrefix+"UseINT8"+idxStr))
+      useINT8Mode = cfg.getEnabled(backendPrefix+"UseINT8"+idxStr);
+    else if(cfg.contains("useINT8"+idxStr))
+      useINT8Mode = cfg.getEnabled("useINT8"+idxStr);
+    else if(cfg.contains(backendPrefix+"UseINT8"))
+      useINT8Mode = cfg.getEnabled(backendPrefix+"UseINT8");
+    else if(cfg.contains("useINT8"))
+      useINT8Mode = cfg.getEnabled("useINT8");
+
+    string int8CalibrationCacheFile;
+    if(cfg.contains("int8CalibrationCacheFile"+idxStr))
+      int8CalibrationCacheFile = cfg.getString("int8CalibrationCacheFile"+idxStr);
+    else if(cfg.contains("int8CalibrationCacheFile"))
+      int8CalibrationCacheFile = cfg.getString("int8CalibrationCacheFile");
+
+    enabled_t useFP8Mode = enabled_t::Auto;
+    if(cfg.contains(backendPrefix+"UseFP8"+idxStr))
+      useFP8Mode = cfg.getEnabled(backendPrefix+"UseFP8"+idxStr);
+    else if(cfg.contains("useFP8"+idxStr))
+      useFP8Mode = cfg.getEnabled("useFP8"+idxStr);
+    else if(cfg.contains(backendPrefix+"UseFP8"))
+      useFP8Mode = cfg.getEnabled(backendPrefix+"UseFP8");
+    else if(cfg.contains("useFP8"))
+      useFP8Mode = cfg.getEnabled("useFP8");
+
     int forcedSymmetry = -1;
     if(setupFor != SETUP_FOR_DISTRIBUTED && cfg.contains("nnForcedSymmetry"))
       forcedSymmetry = cfg.getInt("nnForcedSymmetry",0,SymmetryHelpers::NUM_SYMMETRIES-1);
@@ -255,6 +281,9 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       "After dedups: nnModelFile" + idxStr + " = " + nnModelFile
       + " useFP16 " + useFP16Mode.toString()
       + " useNHWC " + useNHWCMode.toString()
+      + " useINT8 " + useINT8Mode.toString()
+      + " useFP8 " + useFP8Mode.toString()
+      + " int8Calib " + int8CalibrationCacheFile
     );
 
     int nnCacheSizePowerOfTwo =
@@ -320,6 +349,9 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       openCLReTunePerBoardSize,
       useFP16Mode,
       useNHWCMode,
+      useINT8Mode,
+      useFP8Mode,
+      int8CalibrationCacheFile,
       numNNServerThreadsPerModel,
       gpuIdxByServerThread,
       nnRandSeed,
