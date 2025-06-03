@@ -94,6 +94,7 @@ class Int8CacheCalibrator : public IInt8EntropyCalibrator2 {
     try {
       string contents = FileUtils::readFileBinary(cacheFile);
       cache.assign(contents.begin(), contents.end());
+      cache = FileUtils::readFileBinary(cacheFile);
     } catch(const StringError& e) {
       (void)e;
     }

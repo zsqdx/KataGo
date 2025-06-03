@@ -99,6 +99,7 @@ class NNEvaluator {
     enabled_t useINT8Mode,
     enabled_t useFP8Mode,
     const std::string& int8CalibrationCacheFileArg,
+    const std::string& int8CalibrationCacheFile,
     int numThreads,
     const std::vector<int>& gpuIdxByServerThread,
     const std::string& randSeed,

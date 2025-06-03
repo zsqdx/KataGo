@@ -262,7 +262,6 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       int8CalibrationCacheFile = cfg.getString("int8CalibrationCacheFile"+idxStr);
     else if(cfg.contains("int8CalibrationCacheFile"))
       int8CalibrationCacheFile = cfg.getString("int8CalibrationCacheFile");
-
     enabled_t useFP8Mode = enabled_t::Auto;
     if(cfg.contains(backendPrefix+"UseFP8"+idxStr))
       useFP8Mode = cfg.getEnabled(backendPrefix+"UseFP8"+idxStr);
