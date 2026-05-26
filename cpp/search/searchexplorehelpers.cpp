@@ -448,7 +448,13 @@ void Search::selectBestChildToDescend(
     parentUtility, parentWeightPerVisit, parentUtilityStdevFactor
   );
 
-  bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE] = { }; // Initialize all to false
+  int32_t posesWithChildMarker = thread.posesWithChildBufMarker + 1;
+  if(posesWithChildMarker <= 0) {
+    std::fill(thread.posesWithChildBuf.begin(), thread.posesWithChildBuf.end(), 0);
+    posesWithChildMarker = 1;
+  }
+  thread.posesWithChildBufMarker = posesWithChildMarker;
+  std::vector<int32_t>& posesWithChildBuf = thread.posesWithChildBuf;
   bool antiMirror = searchParams.antiMirror && mirroringPla != C_EMPTY && isMirroringSinceSearchStart(thread.history,0);
 
   double exploreScaling;
@@ -492,7 +498,7 @@ void Search::selectBestChildToDescend(
       bestChildMoveLoc = moveLoc;
     }
 
-    posesWithChildBuf[getPos(moveLoc)] = true;
+    posesWithChildBuf[getPos(moveLoc)] = posesWithChildMarker;
   }
 
   const std::vector<int>& avoidMoveUntilByLoc = thread.pla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
@@ -504,7 +510,7 @@ void Search::selectBestChildToDescend(
     for(const auto& pair: node.evalCacheEntry->firstExploreEvals) {
       Loc moveLoc = pair.first;
       int movePos = getPos(moveLoc);
-      bool alreadyTried = posesWithChildBuf[movePos];
+      bool alreadyTried = posesWithChildBuf[movePos] == posesWithChildMarker;
       if(alreadyTried)
         continue;
 
@@ -553,7 +559,7 @@ void Search::selectBestChildToDescend(
   Loc bestNewMoveLoc = Board::NULL_LOC;
   float bestNewNNPolicyProb = -1.0f;
   for(int movePos = 0; movePos<policySize; movePos++) {
-    bool alreadyTried = posesWithChildBuf[movePos];
+    bool alreadyTried = posesWithChildBuf[movePos] == posesWithChildMarker;
     if(alreadyTried)
       continue;
 

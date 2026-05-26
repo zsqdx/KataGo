@@ -212,6 +212,7 @@ struct SearchNode {
   SearchChildPointer* children0; //Guaranteed to be non-NULL once state >= STATE_EXPANDED0
   SearchChildPointer* children1; //Guaranteed to be non-NULL once state >= STATE_EXPANDED1
   SearchChildPointer* children2; //Guaranteed to be non-NULL once state >= STATE_EXPANDED2
+  SearchChildPointer children0Storage[SearchChildrenSizes::SIZE0OVERFLOW];
 
   //Lightweight mutable---------------------------------------------------------------
   //Protected under statsLock for writing

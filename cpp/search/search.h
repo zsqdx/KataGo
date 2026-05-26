@@ -49,7 +49,11 @@ struct SearchThread {
   BoardHistory history;
   Hash128 graphHash;
   //The path we trace down the graph as we do a playout
-  std::unordered_set<SearchNode*> graphPath;
+  std::vector<SearchNode*> graphPath;
+
+  //Scratch buffer for marking child move positions during selection without clearing a full bool array every playout step.
+  std::vector<int32_t> posesWithChildBuf;
+  int32_t posesWithChildBufMarker;
 
   //Tracks whether this thread did something that "should" be counted as a playout
   //for the purpose of playout limits

@@ -7,10 +7,16 @@
 #include "../game/board.h"
 #include "../search/mutexpool.h"
 
+#include <unordered_map>
+
 struct SearchNode;
 
+struct SearchNodeTableHash {
+  size_t operator()(Hash128 hash) const;
+};
+
 struct SearchNodeTable {
-  std::vector<std::map<Hash128,SearchNode*>> entries;
+  std::vector<std::unordered_map<Hash128,SearchNode*,SearchNodeTableHash>> entries;
   MutexPool* mutexPool;
   uint32_t numShards;
 

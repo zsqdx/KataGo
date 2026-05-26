@@ -42,6 +42,8 @@ SearchThread::SearchThread(int tIdx, const Search& search)
    history(search.rootHistory),
    graphHash(search.rootGraphHash),
    graphPath(),
+   posesWithChildBuf(),
+   posesWithChildBufMarker(0),
    shouldCountPlayout(false),
    rand(makeSeed(search,tIdx)),
    nnResultBuf(),
@@ -52,6 +54,7 @@ SearchThread::SearchThread(int tIdx, const Search& search)
 {
   statsBuf.resize(NNPos::MAX_NN_POLICY_SIZE);
   graphPath.reserve(256);
+  posesWithChildBuf.resize(NNPos::MAX_NN_POLICY_SIZE);
 
   //Reserving even this many is almost certainly overkill but should guarantee that we never have hit allocation here.
   oldNNOutputsToCleanUp.reserve(8);
@@ -850,18 +853,18 @@ SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc
   std::lock_guard<std::mutex> lock(mutex);
 
   SearchNode* child = NULL;
-  std::map<Hash128,SearchNode*>& nodeMap = nodeTable->entries[nodeTableIdx];
+  auto& nodeMap = nodeTable->entries[nodeTableIdx];
 
   while(true) {
-    auto insertLoc = nodeMap.lower_bound(childHash);
+    auto iter = nodeMap.find(childHash);
 
-    if(insertLoc != nodeMap.end() && insertLoc->first == childHash) {
+    if(iter != nodeMap.end()) {
       //Attempt to transpose to invalid node - rerandomize hash and just store this node somewhere arbitrary.
-      if(insertLoc->second->nextPla != nextPla) {
+      if(iter->second->nextPla != nextPla) {
         childHash = thread.board.pos_hash ^ Hash128(thread.rand.nextUInt64(),thread.rand.nextUInt64());
         continue;
       }
-      child = insertLoc->second;
+      child = iter->second;
     }
     else {
       child = new SearchNode(nextPla, forceNonTerminal, createMutexIdxForNode(thread), graphHash);
@@ -887,8 +890,7 @@ SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc
       if(patternBonusTable != NULL)
         child->patternBonusHash = patternBonusTable->getHash(getOpp(thread.pla), bestChildMoveLoc, thread.history.getRecentBoard(1));
 
-      //Insert into map! Use insertLoc as hint.
-      nodeMap.insert(insertLoc, std::make_pair(childHash,child));
+      nodeMap.emplace(childHash,child);
     }
     break;
   }
@@ -930,8 +932,8 @@ void Search::deleteAllOldOrAllNewTableNodesAndSubtreeValueBiasMulithreaded(bool 
     size_t idx0 = (size_t)((uint64_t)(threadIdx) * nodeTable->entries.size() / (numAdditionalThreads+1));
     size_t idx1 = (size_t)((uint64_t)(threadIdx+1) * nodeTable->entries.size() / (numAdditionalThreads+1));
     for(size_t i = idx0; i<idx1; i++) {
-      std::map<Hash128,SearchNode*>& nodeMap = nodeTable->entries[i];
-      for(auto it = nodeMap.cbegin(); it != nodeMap.cend();) {
+      auto& nodeMap = nodeTable->entries[i];
+      for(auto it = nodeMap.begin(); it != nodeMap.end();) {
         SearchNode* node = it->second;
         if(old == (node->nodeAge.load(std::memory_order_acquire) < searchNodeAge)) {
           removeSubtreeValueBias(node);
@@ -955,8 +957,8 @@ void Search::deleteAllTableNodesMulithreaded() {
     size_t idx0 = (size_t)((uint64_t)(threadIdx) * nodeTable->entries.size() / (numAdditionalThreads+1));
     size_t idx1 = (size_t)((uint64_t)(threadIdx+1) * nodeTable->entries.size() / (numAdditionalThreads+1));
     for(size_t i = idx0; i<idx1; i++) {
-      std::map<Hash128,SearchNode*>& nodeMap = nodeTable->entries[i];
-      for(auto it = nodeMap.cbegin(); it != nodeMap.cend(); ++it) {
+      auto& nodeMap = nodeTable->entries[i];
+      for(auto it = nodeMap.begin(); it != nodeMap.end(); ++it) {
         delete it->second;
       }
       nodeMap.clear();
@@ -1196,7 +1198,7 @@ bool Search::playoutDescend(
       }
     }
 
-    bool suc = node.state.compare_exchange_strong(nodeState, SearchNode::STATE_EVALUATING, std::memory_order_seq_cst);
+    bool suc = node.state.compare_exchange_strong(nodeState, SearchNode::STATE_EVALUATING, std::memory_order_acq_rel);
     if(!suc) {
       //Presumably someone else got there first.
       //Just give up on this playout and try again from the start.
@@ -1206,7 +1208,7 @@ bool Search::playoutDescend(
     else {
       //Perform the nn evaluation and finish!
       node.initializeChildren();
-      node.state.store(SearchNode::STATE_EXPANDED0, std::memory_order_seq_cst);
+      node.state.store(SearchNode::STATE_EXPANDED0, std::memory_order_release);
       return true;
     }
   }
@@ -1388,9 +1390,8 @@ bool Search::playoutDescend(
   //reasonable in the end of the search.
   //Note that this means that child visits >= edge visits is NOT an invariant.
   {
-    std::pair<std::unordered_set<SearchNode*>::iterator,bool> result = thread.graphPath.insert(child);
-    //No insertion, child was already there
-    if(!result.second) {
+    bool alreadyInPath = std::find(thread.graphPath.begin(), thread.graphPath.end(), child) != thread.graphPath.end();
+    if(alreadyInPath) {
       if(countEdgeVisit) {
         SearchNodeChildrenReference children = node.getChildren(nodeState);
         children[bestChildIdx].addEdgeVisits(1);
@@ -1404,6 +1405,7 @@ bool Search::playoutDescend(
       // If we didn't count an edge visit, none of the parents need to update either.
       return countEdgeVisit;
     }
+    thread.graphPath.push_back(child);
   }
 
   //Recurse!

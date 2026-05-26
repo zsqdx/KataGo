@@ -157,7 +157,7 @@ SearchNode::SearchNode(const SearchNode& other, bool fnt, bool copySubtreeValueB
       humanOutput.store(new std::shared_ptr<NNOutput>(*otherVal), std::memory_order_release);
   }
   if(other.children0 != NULL) {
-    children0 = new SearchChildPointer[SearchChildrenSizes::SIZE0OVERFLOW];
+    children0 = children0Storage;
     for(int i = 0; i<SearchChildrenSizes::SIZE0OVERFLOW; i++)
       children0[i].storeAll(other.children0[i]);
   }
@@ -265,7 +265,7 @@ bool SearchNode::maybeExpandChildrenCapacityForNewChild(SearchNodeState& stateVa
 
 void SearchNode::initializeChildren() {
   assert(children0 == NULL);
-  children0 = new SearchChildPointer[SearchChildrenSizes::SIZE0OVERFLOW];
+  children0 = children0Storage;
 }
 
 //Precondition: Assumes that we have actually checked the childen array that stateValue suggests that
@@ -400,7 +400,7 @@ SearchNode::~SearchNode() {
     delete[] children2;
   if(children1 != NULL)
     delete[] children1;
-  if(children0 != NULL)
+  if(children0 != NULL && children0 != children0Storage)
     delete[] children0;
   if(nnOutput != NULL)
     delete nnOutput;
