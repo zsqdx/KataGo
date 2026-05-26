@@ -1757,41 +1757,47 @@ void NeuralNet::getOutput(
 
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->policyPassResults.get(),
       gpuHandle->getBuffer("OutputPolicyPass"),
       inputBuffers->singlePolicyPassResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost,
+      cudaStreamPerThread));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->policyResults.get(),
       gpuHandle->getBuffer("OutputPolicy"),
       inputBuffers->singlePolicyResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost,
+      cudaStreamPerThread));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->valueResults.get(),
       gpuHandle->getBuffer("OutputValue"),
       inputBuffers->singleValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost,
+      cudaStreamPerThread));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->scoreValueResults.get(),
       gpuHandle->getBuffer("OutputScoreValue"),
       inputBuffers->singleScoreValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost,
+      cudaStreamPerThread));
   if(anyOutputNeedsOwnership) {
     CUDA_ERR(
       "getOutput",
-      cudaMemcpy(
+      cudaMemcpyAsync(
         inputBuffers->ownershipResults.get(),
         gpuHandle->getBuffer("OutputOwnership"),
         inputBuffers->singleOwnershipResultBytes * batchSize,
-        cudaMemcpyDeviceToHost));
+        cudaMemcpyDeviceToHost,
+        cudaStreamPerThread));
   }
+  CUDA_ERR("getOutput", cudaStreamSynchronize(cudaStreamPerThread));
 
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
