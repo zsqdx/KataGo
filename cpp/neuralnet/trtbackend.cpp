@@ -1516,6 +1516,58 @@ void NeuralNet::printDevices() {
   }
 }
 
+struct HostFloatBuffer {
+  float* ptr;
+  bool pinned;
+  unique_ptr<float[]> fallback;
+
+  HostFloatBuffer()
+    : ptr(NULL), pinned(false), fallback()
+  {}
+
+  ~HostFloatBuffer() {
+    if(pinned && ptr != NULL)
+      CUDA_ERR("~HostFloatBuffer", cudaFreeHost(ptr));
+  }
+
+  HostFloatBuffer(const HostFloatBuffer&) = delete;
+  HostFloatBuffer& operator=(const HostFloatBuffer&) = delete;
+
+  void allocate(size_t numElts) {
+    if(numElts == 0) {
+      ptr = NULL;
+      return;
+    }
+    cudaError_t status = cudaMallocHost(reinterpret_cast<void**>(&ptr), numElts * sizeof(float));
+    if(status == cudaSuccess) {
+      pinned = true;
+    }
+    else {
+      cudaGetLastError();
+      ptr = NULL;
+      pinned = false;
+      fallback = make_unique<float[]>(numElts);
+      ptr = fallback.get();
+    }
+  }
+
+  float* get() {
+    return ptr;
+  }
+
+  const float* get() const {
+    return ptr;
+  }
+
+  float& operator[](size_t idx) {
+    return ptr[idx];
+  }
+
+  const float& operator[](size_t idx) const {
+    return ptr[idx];
+  }
+};
+
 struct InputBuffers {
   int maxBatchSize;
 
@@ -1548,15 +1600,15 @@ struct InputBuffers {
   size_t scoreValueResultBufferBytes;
   size_t ownershipResultBufferBytes;
 
-  unique_ptr<float[]> maskInputs;           // Host pointer
-  unique_ptr<float[]> spatialInputs;        // Host pointer
-  unique_ptr<float[]> globalInputs;  // Host pointer
-  unique_ptr<float[]> metaInputs;  // Host pointer
-  unique_ptr<float[]> policyPassResults;    // Host pointer
-  unique_ptr<float[]> policyResults;        // Host pointer
-  unique_ptr<float[]> valueResults;         // Host pointer
-  unique_ptr<float[]> scoreValueResults;    // Host pointer
-  unique_ptr<float[]> ownershipResults;     // Host pointer
+  HostFloatBuffer maskInputs;           // Host pointer
+  HostFloatBuffer spatialInputs;        // Host pointer
+  HostFloatBuffer globalInputs;         // Host pointer
+  HostFloatBuffer metaInputs;           // Host pointer
+  HostFloatBuffer policyPassResults;    // Host pointer
+  HostFloatBuffer policyResults;        // Host pointer
+  HostFloatBuffer valueResults;         // Host pointer
+  HostFloatBuffer scoreValueResults;    // Host pointer
+  HostFloatBuffer ownershipResults;     // Host pointer
 
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
@@ -1604,15 +1656,15 @@ struct InputBuffers {
     scoreValueResultBufferBytes = maxBatchSize * singleScoreValueResultBytes;
     ownershipResultBufferBytes = maxBatchSize * singleOwnershipResultBytes;
 
-    maskInputs = make_unique<float[]>(maxBatchSize * singleMaskElts);
-    spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
-    globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
-    metaInputs = make_unique<float[]>(maxBatchSize * singleInputMetaElts);
-    policyPassResults = make_unique<float[]>(maxBatchSize * singlePolicyPassResultElts);
-    policyResults = make_unique<float[]>(maxBatchSize * singlePolicyResultElts);
-    valueResults = make_unique<float[]>(maxBatchSize * singleValueResultElts);
-    scoreValueResults = make_unique<float[]>(maxBatchSize * singleScoreValueResultElts);
-    ownershipResults = make_unique<float[]>(maxBatchSize * singleOwnershipResultElts);
+    maskInputs.allocate(maxBatchSize * singleMaskElts);
+    spatialInputs.allocate(maxBatchSize * singleInputElts);
+    globalInputs.allocate(maxBatchSize * singleInputGlobalElts);
+    metaInputs.allocate(maxBatchSize * singleInputMetaElts);
+    policyPassResults.allocate(maxBatchSize * singlePolicyPassResultElts);
+    policyResults.allocate(maxBatchSize * singlePolicyResultElts);
+    valueResults.allocate(maxBatchSize * singleValueResultElts);
+    scoreValueResults.allocate(maxBatchSize * singleScoreValueResultElts);
+    ownershipResults.allocate(maxBatchSize * singleOwnershipResultElts);
   }
 
   InputBuffers() = delete;
