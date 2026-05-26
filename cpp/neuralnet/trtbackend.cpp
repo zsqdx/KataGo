@@ -1082,6 +1082,7 @@ struct ComputeHandle {
   int maxBatchSize;
   int modelVersion;
   vector<pair<string, string>> debugOutputs;
+  int lastInputShapeBatchSize;
 
   TRTLogger trtLogger;
   TRTErrorRecorder trtErrorRecorder;
@@ -1101,6 +1102,7 @@ struct ComputeHandle {
 
     maxBatchSize = maxBatchSz;
     modelVersion = loadedModel->modelDesc.modelVersion;
+    lastInputShapeBatchSize = -1;
 
     // Certain minor versions of TensorRT uses a global logger, which is bad.
     // Since TensorRT maintains ABI compatibility between minor versions, a dynamic library mismatch
@@ -1656,7 +1658,6 @@ void NeuralNet::getOutput(
     const float* rowSpatial = inputBufs[nIdx]->rowSpatialBuf.data();
     const float* rowMeta = inputBufs[nIdx]->rowMetaBuf.data();
     const bool hasRowMeta = inputBufs[nIdx]->hasRowMeta;
-    copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     std::copy(rowGlobal,rowGlobal+numGlobalFeatures,rowGlobalInput);
     if(numMetaFeatures > 0) {
       testAssert(rowMeta != NULL);
@@ -1728,20 +1729,31 @@ void NeuralNet::getOutput(
         cudaMemcpyHostToDevice));
   }
 
-  auto maskInputDims = gpuHandle->getBufferDynamicShape("InputMask", batchSize);
-  auto spatialInputDims = gpuHandle->getBufferDynamicShape("InputSpatial", batchSize);
-  auto globalInputDims = gpuHandle->getBufferDynamicShape("InputGlobal", batchSize);
+  if(gpuHandle->lastInputShapeBatchSize != batchSize) {
+    auto maskInputDims = gpuHandle->getBufferDynamicShape("InputMask", batchSize);
+    auto spatialInputDims = gpuHandle->getBufferDynamicShape("InputSpatial", batchSize);
+    auto globalInputDims = gpuHandle->getBufferDynamicShape("InputGlobal", batchSize);
+    gpuHandle->exec->setInputShape("InputMask", maskInputDims);
+    gpuHandle->exec->setInputShape("InputSpatial", spatialInputDims);
+    gpuHandle->exec->setInputShape("InputGlobal", globalInputDims);
 
-  gpuHandle->exec->setInputShape("InputMask", maskInputDims);
-  gpuHandle->exec->setInputShape("InputSpatial", spatialInputDims);
-  gpuHandle->exec->setInputShape("InputGlobal", globalInputDims);
-
-  if(numMetaFeatures > 0) {
-    auto metaInputDims = gpuHandle->getBufferDynamicShape("InputMeta", batchSize);
-    gpuHandle->exec->setInputShape("InputMeta", metaInputDims);
+    if(numMetaFeatures > 0) {
+      auto metaInputDims = gpuHandle->getBufferDynamicShape("InputMeta", batchSize);
+      gpuHandle->exec->setInputShape("InputMeta", metaInputDims);
+    }
+    gpuHandle->lastInputShapeBatchSize = batchSize;
   }
 
   gpuHandle->exec->enqueueV3(cudaStreamPerThread);
+
+  assert(outputs.size() == batchSize);
+  bool anyOutputNeedsOwnership = false;
+  for(int row = 0; row < batchSize; row++) {
+    if(outputs[row]->whiteOwnerMap != NULL) {
+      anyOutputNeedsOwnership = true;
+      break;
+    }
+  }
 
   CUDA_ERR(
     "getOutput",
@@ -1771,18 +1783,18 @@ void NeuralNet::getOutput(
       gpuHandle->getBuffer("OutputScoreValue"),
       inputBuffers->singleScoreValueResultBytes * batchSize,
       cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->ownershipResults.get(),
-      gpuHandle->getBuffer("OutputOwnership"),
-      inputBuffers->singleOwnershipResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+  if(anyOutputNeedsOwnership) {
+    CUDA_ERR(
+      "getOutput",
+      cudaMemcpy(
+        inputBuffers->ownershipResults.get(),
+        gpuHandle->getBuffer("OutputOwnership"),
+        inputBuffers->singleOwnershipResultBytes * batchSize,
+        cudaMemcpyDeviceToHost));
+  }
 
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
-
-  assert(outputs.size() == batchSize);
 
   float policyProbsTmp[NNPos::MAX_NN_POLICY_SIZE];
 
