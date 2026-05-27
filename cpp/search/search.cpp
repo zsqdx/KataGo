@@ -1029,7 +1029,9 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
       else {
         double resultUtility = getResultUtility(winLossValueAvg, noResultValueAvg);
         double scoreUtility = getScoreUtility(scoreMeanAvg, scoreMeanSqAvg);
-        double newUtilityAvg = resultUtility + scoreUtility;
+        const NNOutput* nnOutputForUtility = node->getNNOutput();
+        double uncertaintyUtility = nnOutputForUtility == NULL ? 0.0 : getUncertaintyUtility(winLossValueAvg, scoreMeanAvg, *nnOutputForUtility);
+        double newUtilityAvg = resultUtility + scoreUtility + uncertaintyUtility;
         newUtilityAvg += getPatternBonus(node->patternBonusHash,getOpp(node->nextPla));
         double newUtilitySqAvg = newUtilityAvg * newUtilityAvg;
 
@@ -1167,8 +1169,9 @@ bool Search::playoutDescend(
       double scoreMean = 0.0;
       double scoreMeanSq = 0.0;
       double lead = 0.0;
+      double uncertaintyUtility = 0.0;
       double weight = (searchParams.useUncertainty && nnEvaluator->supportsShorttermError()) ? searchParams.uncertaintyMaxWeight : 1.0;
-      addLeafValue(node, winLossValue, noResultValue, scoreMean, scoreMeanSq, lead, weight, true, false);
+      addLeafValue(node, winLossValue, noResultValue, scoreMean, scoreMeanSq, lead, uncertaintyUtility, weight, true, false);
       return true;
     }
     else {
@@ -1177,8 +1180,9 @@ bool Search::playoutDescend(
       double scoreMean = ScoreValue::whiteScoreDrawAdjust(thread.history.finalWhiteMinusBlackScore,searchParams.drawEquivalentWinsForWhite,thread.history);
       double scoreMeanSq = ScoreValue::whiteScoreMeanSqOfScoreGridded(thread.history.finalWhiteMinusBlackScore,searchParams.drawEquivalentWinsForWhite);
       double lead = scoreMean;
+      double uncertaintyUtility = 0.0;
       double weight = (searchParams.useUncertainty && nnEvaluator->supportsShorttermError()) ? searchParams.uncertaintyMaxWeight : 1.0;
-      addLeafValue(node, winLossValue, noResultValue, scoreMean, scoreMeanSq, lead, weight, true, false);
+      addLeafValue(node, winLossValue, noResultValue, scoreMean, scoreMeanSq, lead, uncertaintyUtility, weight, true, false);
       return true;
     }
   }
@@ -1437,12 +1441,12 @@ bool Search::maybeCatchUpEdgeVisits(
   SearchNodeChildrenReference children = node.getChildren(nodeState);
   SearchChildPointer& childPointer = children[bestChildIdx];
 
-  // int64_t maxNumToAdd = 1;
-  // if(searchParams.graphSearchCatchUpProp > 0.0) {
-  //   int64_t parentVisits = node.stats.visits.load(std::memory_order_acquire);
-  //   //Truncate down
-  //   maxNumToAdd = 1 + (int64_t)(searchParams.graphSearchCatchUpProp * parentVisits);
-  // }
+  int64_t maxNumToAdd = 1;
+  if(searchParams.graphSearchCatchUpProp > 0.0) {
+    int64_t parentVisits = node.stats.visits.load(std::memory_order_acquire);
+    //Truncate down
+    maxNumToAdd = 1 + (int64_t)(searchParams.graphSearchCatchUpProp * parentVisits);
+  }
   int64_t childVisits = child->stats.visits.load(std::memory_order_acquire);
   int64_t edgeVisits = childPointer.getEdgeVisits();
 
@@ -1453,12 +1457,11 @@ bool Search::maybeCatchUpEdgeVisits(
 
   //If the edge visits exceeds the child then we need to search the child more, but as long as that's not the case,
   //we can add more edge visits.
-  constexpr int64_t numToAdd = 1;
-  // int64_t numToAdd;
+  int64_t numToAdd;
   do {
     if(edgeVisits >= childVisits)
       return false;
-    // numToAdd = std::min((childVisits - edgeVisits + 3) / 4, maxNumToAdd);
+    numToAdd = std::min((childVisits - edgeVisits + 3) / 4, maxNumToAdd);
   } while(!childPointer.compexweakEdgeVisits(edgeVisits, edgeVisits + numToAdd));
 
   return true;

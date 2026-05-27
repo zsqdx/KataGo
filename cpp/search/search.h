@@ -443,6 +443,7 @@ private:
   double getScoreUtility(double scoreMeanAvg, double scoreMeanSqAvg) const;
   double getScoreUtilityDiff(double scoreMeanAvg, double scoreMeanSqAvg, double delta) const;
   double getApproxScoreUtilityDerivative(double scoreMean) const;
+  double getUncertaintyUtility(double winLossValue, double scoreMean, const NNOutput& nnOutput) const;
   double getUtilityFromNN(const NNOutput& nnOutput) const;
 
   //----------------------------------------------------------------------------------------
@@ -610,6 +611,7 @@ private:
     double scoreMean,
     double scoreMeanSq,
     double lead,
+    double uncertaintyUtility,
     double weight,
     bool isTerminal,
     bool assumeNoExistingWeight

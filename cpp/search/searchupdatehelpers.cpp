@@ -15,13 +15,15 @@ void Search::addLeafValue(
   double scoreMean,
   double scoreMeanSq,
   double lead,
+  double uncertaintyUtility,
   double weight,
   bool isTerminal,
   bool assumeNoExistingWeight
 ) {
   double utility =
     getResultUtility(winLossValue, noResultValue)
-    + getScoreUtility(scoreMean, scoreMeanSq);
+    + getScoreUtility(scoreMean, scoreMeanSq)
+    + uncertaintyUtility;
 
   if(searchParams.subtreeValueBiasFactor != 0 && !isTerminal && node.subtreeValueBiasTableEntry != nullptr) {
     SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);
@@ -108,7 +110,8 @@ void Search::addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExisti
   }
 
   double weight = computeWeightFromNNOutput(nnOutput);
-  addLeafValue(node,winLossValue,noResultProb,scoreMean,scoreMeanSq,lead,weight,false,assumeNoExistingWeight);
+  double uncertaintyUtility = getUncertaintyUtility(winLossValue, scoreMean, *nnOutput);
+  addLeafValue(node,winLossValue,noResultProb,scoreMean,scoreMeanSq,lead,uncertaintyUtility,weight,false,assumeNoExistingWeight);
 }
 
 double Search::computeWeightFromNNOutput(const NNOutput* nnOutput) const {
@@ -268,7 +271,8 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
     double lead = (double)nnOutput->whiteLead;
     double utility =
       getResultUtility(winProb-lossProb, noResultProb)
-      + getScoreUtility(scoreMean, scoreMeanSq);
+      + getScoreUtility(scoreMean, scoreMeanSq)
+      + getUncertaintyUtility(winProb-lossProb, scoreMean, *nnOutput);
 
     if(searchParams.subtreeValueBiasFactor != 0 && node.subtreeValueBiasTableEntry != nullptr) {
       SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);

@@ -2289,7 +2289,8 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     double lead = (double)nnOutput->whiteLead;
     double utility =
       getResultUtility(winProb-lossProb, noResultProb)
-      + getScoreUtility(scoreMean, scoreMeanSq);
+      + getScoreUtility(scoreMean, scoreMeanSq)
+      + getUncertaintyUtility(winProb-lossProb, scoreMean, *nnOutput);
 
     double weight = computeWeightFromNNOutput(nnOutput);
     winLossValueSum += (winProb - lossProb) * weight;

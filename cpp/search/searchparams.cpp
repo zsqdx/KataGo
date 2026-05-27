@@ -17,6 +17,9 @@ SearchParams::SearchParams()
    dynamicScoreCenterScale(1.0),
    noResultUtilityForWhite(0.0),
    drawEquivalentWinsForWhite(0.5),
+   uncertaintyUtilityFactor(0.0),
+   uncertaintyUtilityScoreWeight(1.0),
+   uncertaintyUtilityAdvantageScale(0.25),
    cpuctExploration(1.0),
    cpuctExplorationLog(0.0),
    cpuctExplorationBase(500),
@@ -40,7 +43,7 @@ SearchParams::SearchParams()
    useGraphSearch(false),
    graphSearchRepBound(11),
    graphSearchCatchUpLeakProb(0.0),
-   //graphSearchCatchUpProp(0.0),
+   graphSearchCatchUpProp(0.0),
    rootNoiseEnabled(false),
    rootDirichletNoiseTotalConcentration(10.83),
    rootDirichletNoiseWeight(0.25),
@@ -131,6 +134,9 @@ bool SearchParams::operator==(const SearchParams& other) const {
     dynamicScoreCenterScale == other.dynamicScoreCenterScale &&
     noResultUtilityForWhite == other.noResultUtilityForWhite &&
     drawEquivalentWinsForWhite == other.drawEquivalentWinsForWhite &&
+    uncertaintyUtilityFactor == other.uncertaintyUtilityFactor &&
+    uncertaintyUtilityScoreWeight == other.uncertaintyUtilityScoreWeight &&
+    uncertaintyUtilityAdvantageScale == other.uncertaintyUtilityAdvantageScale &&
 
     cpuctExploration == other.cpuctExploration &&
     cpuctExplorationLog == other.cpuctExplorationLog &&
@@ -162,6 +168,7 @@ bool SearchParams::operator==(const SearchParams& other) const {
     useGraphSearch == other.useGraphSearch &&
     graphSearchRepBound == other.graphSearchRepBound &&
     graphSearchCatchUpLeakProb == other.graphSearchCatchUpLeakProb &&
+    graphSearchCatchUpProp == other.graphSearchCatchUpProp &&
 
     rootNoiseEnabled == other.rootNoiseEnabled &&
     rootDirichletNoiseTotalConcentration == other.rootDirichletNoiseTotalConcentration &&
@@ -385,6 +392,9 @@ json SearchParams::changeableParametersToJson() const {
   ret["dynamicScoreCenterScale"] = dynamicScoreCenterScale;
   ret["noResultUtilityForWhite"] = noResultUtilityForWhite;
   ret["drawEquivalentWinsForWhite"] = drawEquivalentWinsForWhite;
+  ret["uncertaintyUtilityFactor"] = uncertaintyUtilityFactor;
+  ret["uncertaintyUtilityScoreWeight"] = uncertaintyUtilityScoreWeight;
+  ret["uncertaintyUtilityAdvantageScale"] = uncertaintyUtilityAdvantageScale;
 
   ret["cpuctExploration"] = cpuctExploration;
   ret["cpuctExplorationLog"] = cpuctExplorationLog;
@@ -416,6 +426,7 @@ json SearchParams::changeableParametersToJson() const {
   ret["useGraphSearch"] = useGraphSearch;
   ret["graphSearchRepBound"] = graphSearchRepBound;
   ret["graphSearchCatchUpLeakProb"] = graphSearchCatchUpLeakProb;
+  ret["graphSearchCatchUpProp"] = graphSearchCatchUpProp;
 
   ret["rootNoiseEnabled"] = rootNoiseEnabled;
   ret["rootDirichletNoiseTotalConcentration"] = rootDirichletNoiseTotalConcentration;
@@ -533,6 +544,9 @@ void SearchParams::printParams(std::ostream& out) const {
   PRINTPARAM(dynamicScoreCenterScale);
   PRINTPARAM(noResultUtilityForWhite);
   PRINTPARAM(drawEquivalentWinsForWhite);
+  PRINTPARAM(uncertaintyUtilityFactor);
+  PRINTPARAM(uncertaintyUtilityScoreWeight);
+  PRINTPARAM(uncertaintyUtilityAdvantageScale);
 
   PRINTPARAM(cpuctExploration);
   PRINTPARAM(cpuctExplorationLog);
@@ -566,6 +580,7 @@ void SearchParams::printParams(std::ostream& out) const {
   PRINTPARAM(useGraphSearch);
   PRINTPARAM(graphSearchRepBound);
   PRINTPARAM(graphSearchCatchUpLeakProb);
+  PRINTPARAM(graphSearchCatchUpProp);
 
 
 

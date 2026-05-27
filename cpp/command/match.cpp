@@ -2,6 +2,7 @@
 #include "../core/fileutils.h"
 #include "../core/makedir.h"
 #include "../core/config_parser.h"
+#include "../core/elo.h"
 #include "../core/timer.h"
 #include "../dataio/sgf.h"
 #include "../search/asyncbot.h"
@@ -12,7 +13,9 @@
 #include "../core/test.h"
 #include "../main.h"
 
+#include <algorithm>
 #include <csignal>
+#include <cmath>
 
 using namespace std;
 
@@ -26,6 +29,218 @@ static void signalHandler(int signal)
     shouldStop.store(true);
   }
 }
+
+struct MatchEloConfig {
+  bool enabled;
+  int64_t reportPeriodGames;
+  int baselineBotIdx;
+  int candidateBotIdx;
+  double priorGames;
+  bool sprtEnabled;
+  double sprtElo0;
+  double sprtElo1;
+  double sprtAlpha;
+  double sprtBeta;
+};
+
+struct MatchEloGameRecord {
+  double firstWins;
+  double secondWins;
+  double draws;
+
+  MatchEloGameRecord()
+    : firstWins(0.0), secondWins(0.0), draws(0.0)
+  {}
+};
+
+class MatchEloTracker {
+ public:
+  MatchEloTracker(const vector<string>& botNames, const MatchEloConfig& cfg)
+    : names(botNames),
+      config(cfg),
+      numBots((int)botNames.size()),
+      records((size_t)numBots * (size_t)numBots),
+      scoredGames(0),
+      drawGames(0),
+      noResultGames(0),
+      unfinishedGames(0)
+  {}
+
+  void addGame(const FinishedGameData& gameData) {
+    if(!gameData.endHist.isGameFinished) {
+      unfinishedGames += 1;
+      return;
+    }
+    if(gameData.endHist.isNoResult) {
+      noResultGames += 1;
+      return;
+    }
+
+    int bIdx = gameData.bIdx;
+    int wIdx = gameData.wIdx;
+    if(bIdx < 0 || bIdx >= numBots || wIdx < 0 || wIdx >= numBots)
+      return;
+
+    MatchEloGameRecord& record = records[(size_t)bIdx * (size_t)numBots + (size_t)wIdx];
+    if(gameData.endHist.winner == P_BLACK) {
+      record.firstWins += 1.0;
+    }
+    else if(gameData.endHist.winner == P_WHITE) {
+      record.secondWins += 1.0;
+    }
+    else {
+      record.firstWins += 0.5;
+      record.secondWins += 0.5;
+      record.draws += 1.0;
+      drawGames += 1;
+    }
+    scoredGames += 1;
+  }
+
+  int64_t getScoredGames() const {
+    return scoredGames;
+  }
+
+  string report(const std::map<string,double>& timeUsedByBotMap, const std::map<string,double>& movesByBotMap) const {
+    ostringstream out;
+    out << "Match Elo report after " << scoredGames << " scored games";
+    if(drawGames > 0 || noResultGames > 0 || unfinishedGames > 0) {
+      out << " (draws " << drawGames
+          << ", noResult skipped " << noResultGames
+          << ", unfinished skipped " << unfinishedGames << ")";
+    }
+    out << "\n";
+
+    if(scoredGames <= 0) {
+      out << "No scored games yet";
+      return out.str();
+    }
+
+    vector<ComputeElos::WLRecord> winMatrix((size_t)numBots * (size_t)numBots);
+    vector<double> gamesByBot(numBots,0.0);
+    for(int i = 0; i<numBots; i++) {
+      for(int j = 0; j<numBots; j++) {
+        const MatchEloGameRecord& record = records[(size_t)i * (size_t)numBots + (size_t)j];
+        winMatrix[(size_t)i * (size_t)numBots + (size_t)j] = ComputeElos::WLRecord(record.firstWins,record.secondWins);
+        gamesByBot[i] += record.firstWins + record.secondWins;
+        gamesByBot[j] += record.firstWins + record.secondWins;
+      }
+    }
+
+    double priorWL = 0.5 * config.priorGames;
+    vector<double> elos = ComputeElos::computeElos(winMatrix.data(),numBots,priorWL,1000,0.0001,NULL);
+    vector<double> stdevs = ComputeElos::computeApproxEloStdevs(elos,winMatrix.data(),numBots,priorWL);
+
+    vector<int> order;
+    for(int i = 0; i<numBots; i++)
+      order.push_back(i);
+    std::sort(order.begin(),order.end(),[&](int a, int b) {
+      return elos[a] > elos[b];
+    });
+
+    out << "Standings:";
+    for(int idx: order) {
+      const string& name = names[idx];
+      double avgMoveTime = 0.0;
+      bool hasAvgMoveTime = false;
+      auto timeIter = timeUsedByBotMap.find(name);
+      auto movesIter = movesByBotMap.find(name);
+      if(timeIter != timeUsedByBotMap.end() && movesIter != movesByBotMap.end() && movesIter->second > 0.0) {
+        avgMoveTime = timeIter->second / movesIter->second;
+        hasAvgMoveTime = true;
+      }
+
+      out << "\n  "
+          << Global::strprintf("%-18s Elo %+7.1f +/- %5.1f  games %.0f", name.c_str(), elos[idx], stdevs[idx], gamesByBot[idx]);
+      if(hasAvgMoveTime)
+        out << "  avgMoveSec " << Global::strprintf("%.4f", avgMoveTime);
+    }
+
+    if(config.baselineBotIdx >= 0 && config.baselineBotIdx < numBots &&
+       config.candidateBotIdx >= 0 && config.candidateBotIdx < numBots &&
+       config.baselineBotIdx != config.candidateBotIdx) {
+      out << "\n" << reportPair(config.candidateBotIdx,config.baselineBotIdx);
+    }
+    return out.str();
+  }
+
+ private:
+  const vector<string> names;
+  const MatchEloConfig config;
+  const int numBots;
+  vector<MatchEloGameRecord> records;
+  int64_t scoredGames;
+  int64_t drawGames;
+  int64_t noResultGames;
+  int64_t unfinishedGames;
+
+  MatchEloGameRecord getCombinedRecord(int first, int second) const {
+    const MatchEloGameRecord& direct = records[(size_t)first * (size_t)numBots + (size_t)second];
+    const MatchEloGameRecord& reverse = records[(size_t)second * (size_t)numBots + (size_t)first];
+
+    MatchEloGameRecord combined;
+    combined.firstWins = direct.firstWins + reverse.secondWins;
+    combined.secondWins = direct.secondWins + reverse.firstWins;
+    combined.draws = direct.draws + reverse.draws;
+    return combined;
+  }
+
+  static double logisticWinProb(double eloDiff) {
+    return 1.0 / (1.0 + pow(10.0,-eloDiff / 400.0));
+  }
+
+  string reportPair(int first, int second) const {
+    MatchEloGameRecord record = getCombinedRecord(first,second);
+    double total = record.firstWins + record.secondWins;
+    ostringstream out;
+    out << "Pair " << names[first] << " vs " << names[second] << ": ";
+    if(total <= 0.0) {
+      out << "no games";
+      return out.str();
+    }
+
+    double adjustedTotal = total + config.priorGames;
+    double adjustedScore = record.firstWins + 0.5 * config.priorGames;
+    double winProb = adjustedScore / adjustedTotal;
+    winProb = std::min(1.0 - 1e-12, std::max(1e-12, winProb));
+    double elo = 400.0 * log10(winProb / (1.0 - winProb));
+    double eloStderr = 400.0 / log(10.0) * sqrt(1.0 / std::max(1e-12, adjustedTotal * winProb * (1.0 - winProb)));
+    double los = 0.5 * (1.0 + erf(elo / std::max(1e-12, eloStderr) / sqrt(2.0)));
+
+    out << Global::strprintf(
+      "%.1f/%.0f (%.2f%%), Elo %+7.1f +/- %.1f, LOS %.2f%%, W-L-D %.1f-%.1f-%.0f",
+      record.firstWins,
+      total,
+      100.0 * record.firstWins / total,
+      elo,
+      eloStderr,
+      100.0 * los,
+      record.firstWins - 0.5 * record.draws,
+      record.secondWins - 0.5 * record.draws,
+      record.draws
+    );
+
+    if(config.sprtEnabled) {
+      double p0 = std::min(1.0 - 1e-12, std::max(1e-12, logisticWinProb(config.sprtElo0)));
+      double p1 = std::min(1.0 - 1e-12, std::max(1e-12, logisticWinProb(config.sprtElo1)));
+      double llr = record.firstWins * log(p1 / p0) + record.secondWins * log((1.0 - p1) / (1.0 - p0));
+      double upper = log((1.0 - config.sprtBeta) / config.sprtAlpha);
+      double lower = log(config.sprtBeta / (1.0 - config.sprtAlpha));
+      string status;
+      if(llr >= upper)
+        status = "accept H1";
+      else if(llr <= lower)
+        status = "accept H0";
+      else
+        status = "continue";
+      out << "\n  SPRT [" << config.sprtElo0 << "," << config.sprtElo1 << "] "
+          << "LLR " << Global::strprintf("%.3f",llr)
+          << " bounds [" << Global::strprintf("%.3f",lower) << "," << Global::strprintf("%.3f",upper) << "] "
+          << status;
+    }
+    return out.str();
+  }
+};
 
 int MainCmds::match(const vector<string>& args) {
   Board::initHash();
@@ -225,6 +440,22 @@ int MainCmds::match(const vector<string>& args) {
   int64_t numGamesTotal = cfg.getInt64("numGamesTotal",1,((int64_t)1) << 62);
   MatchPairer* matchPairer = new MatchPairer(cfg,numBots,botNames,nnEvalsByBot,paramss,matchupsPerRound,numGamesTotal);
 
+  MatchEloConfig matchEloConfig;
+  matchEloConfig.enabled = cfg.contains("matchEloReport") ? cfg.getBool("matchEloReport") : false;
+  matchEloConfig.reportPeriodGames = cfg.contains("matchEloReportPeriodGames") ? cfg.getInt64("matchEloReportPeriodGames",1,((int64_t)1) << 50) : cfg.getInt64("logGamesEvery",1,1000000);
+  matchEloConfig.baselineBotIdx = cfg.contains("matchEloBaselineBot") ? cfg.getInt("matchEloBaselineBot",0,numBots-1) : 0;
+  matchEloConfig.candidateBotIdx = cfg.contains("matchEloCandidateBot") ? cfg.getInt("matchEloCandidateBot",0,numBots-1) : (numBots > 1 ? 1 : 0);
+  matchEloConfig.priorGames = cfg.contains("matchEloPriorGames") ? cfg.getDouble("matchEloPriorGames",0.0,1000000.0) : 1.0;
+  matchEloConfig.sprtEnabled = cfg.contains("matchEloSprtEnabled") ? cfg.getBool("matchEloSprtEnabled") : false;
+  matchEloConfig.sprtElo0 = cfg.contains("matchEloSprtElo0") ? cfg.getDouble("matchEloSprtElo0",-10000.0,10000.0) : 0.0;
+  matchEloConfig.sprtElo1 = cfg.contains("matchEloSprtElo1") ? cfg.getDouble("matchEloSprtElo1",-10000.0,10000.0) : 5.0;
+  matchEloConfig.sprtAlpha = cfg.contains("matchEloSprtAlpha") ? cfg.getDouble("matchEloSprtAlpha",1e-20,1.0-1e-20) : 0.05;
+  matchEloConfig.sprtBeta = cfg.contains("matchEloSprtBeta") ? cfg.getDouble("matchEloSprtBeta",1e-20,1.0-1e-20) : 0.05;
+  if(matchEloConfig.enabled && numBots < 2)
+    throw StringError("matchEloReport requires numBots >= 2");
+  if(matchEloConfig.sprtEnabled && matchEloConfig.sprtElo0 == matchEloConfig.sprtElo1)
+    throw StringError("matchEloSprtElo0 and matchEloSprtElo1 must differ");
+
   //Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
   for(int i = 0; i<numBots; i++) {
@@ -252,10 +483,13 @@ int MainCmds::match(const vector<string>& args) {
   int64_t gameCount = 0;
   std::map<string,double> timeUsedByBotMap;
   std::map<string,double> movesByBotMap;
+  MatchEloTracker matchEloTracker(botNames,matchEloConfig);
+  int64_t nextMatchEloReportGames = matchEloConfig.reportPeriodGames;
+  int64_t lastMatchEloReportGames = 0;
 
   auto runMatchLoop = [
     &gameRunner,&matchPairer,&sgfOutputDir,&logger,&gameSeedBase,&patternBonusTables,
-    &statsMutex, &gameCount, &timeUsedByBotMap, &movesByBotMap
+    &statsMutex, &gameCount, &timeUsedByBotMap, &movesByBotMap, &matchEloConfig, &matchEloTracker, &nextMatchEloReportGames, &lastMatchEloReportGames
   ](
     uint64_t threadHash
   ) {
@@ -305,6 +539,18 @@ int MainCmds::match(const vector<string>& args) {
           movesByBotMap[gameData->bName] += (double)gameData->bMoveCount;
           movesByBotMap[gameData->wName] += (double)gameData->wMoveCount;
 
+          if(matchEloConfig.enabled) {
+            matchEloTracker.addGame(*gameData);
+            int64_t scoredGames = matchEloTracker.getScoredGames();
+            if(scoredGames >= nextMatchEloReportGames) {
+              logger.write(matchEloTracker.report(timeUsedByBotMap,movesByBotMap));
+              lastMatchEloReportGames = scoredGames;
+              do {
+                nextMatchEloReportGames += matchEloConfig.reportPeriodGames;
+              } while(scoredGames >= nextMatchEloReportGames);
+            }
+          }
+
           int64_t x = gameCount;
           while(x % 2 == 0 && x > 1) x /= 2;
           if(x == 1 || x == 3 || x == 5) {
@@ -345,6 +591,12 @@ int MainCmds::match(const vector<string>& args) {
   }
   for(int i = 0; i<threads.size(); i++)
     threads[i].join();
+
+  if(matchEloConfig.enabled) {
+    std::lock_guard<std::mutex> lock(statsMutex);
+    if(matchEloTracker.getScoredGames() != lastMatchEloReportGames)
+      logger.write(matchEloTracker.report(timeUsedByBotMap,movesByBotMap));
+  }
 
   delete matchPairer;
   delete gameRunner;

@@ -300,10 +300,29 @@ double Search::getApproxScoreUtilityDerivative(double scoreMean) const {
   return staticScoreValueDerivative * searchParams.staticScoreUtilityFactor + dynamicScoreValueDerivative * searchParams.dynamicScoreUtilityFactor;
 }
 
+double Search::getUncertaintyUtility(double winLossValue, double scoreMean, const NNOutput& nnOutput) const {
+  (void)scoreMean;
+  if(searchParams.uncertaintyUtilityFactor <= 0.0)
+    return 0.0;
+
+  double winLossUncertainty = std::max(0.0, (double)nnOutput.shorttermWinlossError);
+  double scoreUncertainty = std::max(0.0, (double)nnOutput.shorttermScoreError) / std::max(1.0, rootBoard.sqrtBoardArea());
+  double utilityUncertainty = winLossUncertainty + searchParams.uncertaintyUtilityScoreWeight * scoreUncertainty;
+  if(utilityUncertainty <= 0.0)
+    return 0.0;
+
+  double advantageScale = std::max(1e-10, searchParams.uncertaintyUtilityAdvantageScale);
+  double advantageSign = tanh(winLossValue / advantageScale);
+  return -searchParams.uncertaintyUtilityFactor * advantageSign * utilityUncertainty;
+}
+
 
 double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
-  double resultUtility = getResultUtilityFromNN(nnOutput);
-  return resultUtility + getScoreUtility(nnOutput.whiteScoreMean, nnOutput.whiteScoreMeanSq);
+  double winLossValue = (double)nnOutput.whiteWinProb - (double)nnOutput.whiteLossProb;
+  double resultUtility = getResultUtility(winLossValue, (double)nnOutput.whiteNoResultProb);
+  return resultUtility
+    + getScoreUtility(nnOutput.whiteScoreMean, nnOutput.whiteScoreMeanSq)
+    + getUncertaintyUtility(winLossValue, nnOutput.whiteScoreMean, nnOutput);
 }
 
 

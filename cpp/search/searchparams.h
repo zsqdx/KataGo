@@ -16,6 +16,9 @@ struct SearchParams {
   double dynamicScoreCenterScale; //Adjust dynamic score scale. 1.0 indicates that score is cared about roughly up to board sizeish.
   double noResultUtilityForWhite; //Utility of having a no-result game (simple ko rules or nonterminating territory encore)
   double drawEquivalentWinsForWhite; //Consider a draw to be this many wins and one minus this many losses.
+  double uncertaintyUtilityFactor; //Scale for preferring lower shortterm uncertainty when ahead and higher uncertainty when behind.
+  double uncertaintyUtilityScoreWeight; //Scale for converting shortterm score error, normalized by sqrt(board area), into uncertainty utility.
+  double uncertaintyUtilityAdvantageScale; //Winloss-value scale for smoothing the ahead/behind uncertainty utility sign.
 
   //Search tree exploration parameters
   double cpuctExploration;  //Constant factor on exploration, should also scale up linearly with magnitude of utility
@@ -51,7 +54,7 @@ struct SearchParams {
   bool useGraphSearch; //Enable graph search instead of tree search?
   int graphSearchRepBound; //Rep bound to use for graph search transposition safety. Higher will reduce transpositions but be more safe.
   double graphSearchCatchUpLeakProb; //Chance to perform a visit to deepen a branch anyways despite being behind on visit count.
-  //double graphSearchCatchUpProp; //When sufficiently far behind on visits on a transposition, catch up extra by adding up to this fraction of parents visits at once.
+  double graphSearchCatchUpProp; //When sufficiently far behind on visits on a transposition, catch up extra by adding up to this fraction of parent visits at once.
 
   //Root parameters
   bool rootNoiseEnabled;

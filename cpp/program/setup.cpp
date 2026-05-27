@@ -472,6 +472,15 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("drawEquivalentWinsForWhite"+idxStr)) params.drawEquivalentWinsForWhite = cfg.getDouble("drawEquivalentWinsForWhite"+idxStr, 0.0, 1.0);
     else if(cfg.contains("drawEquivalentWinsForWhite"))   params.drawEquivalentWinsForWhite = cfg.getDouble("drawEquivalentWinsForWhite",        0.0, 1.0);
     else                                                  params.drawEquivalentWinsForWhite = 0.5;
+    if(cfg.contains("uncertaintyUtilityFactor"+idxStr)) params.uncertaintyUtilityFactor = cfg.getDouble("uncertaintyUtilityFactor"+idxStr, 0.0, 10.0);
+    else if(cfg.contains("uncertaintyUtilityFactor"))   params.uncertaintyUtilityFactor = cfg.getDouble("uncertaintyUtilityFactor",        0.0, 10.0);
+    else                                                params.uncertaintyUtilityFactor = 0.0;
+    if(cfg.contains("uncertaintyUtilityScoreWeight"+idxStr)) params.uncertaintyUtilityScoreWeight = cfg.getDouble("uncertaintyUtilityScoreWeight"+idxStr, 0.0, 10.0);
+    else if(cfg.contains("uncertaintyUtilityScoreWeight"))   params.uncertaintyUtilityScoreWeight = cfg.getDouble("uncertaintyUtilityScoreWeight",        0.0, 10.0);
+    else                                                     params.uncertaintyUtilityScoreWeight = 1.0;
+    if(cfg.contains("uncertaintyUtilityAdvantageScale"+idxStr)) params.uncertaintyUtilityAdvantageScale = cfg.getDouble("uncertaintyUtilityAdvantageScale"+idxStr, 0.0001, 10.0);
+    else if(cfg.contains("uncertaintyUtilityAdvantageScale"))   params.uncertaintyUtilityAdvantageScale = cfg.getDouble("uncertaintyUtilityAdvantageScale",        0.0001, 10.0);
+    else                                                        params.uncertaintyUtilityAdvantageScale = 0.25;
 
     if(cfg.contains("dynamicScoreCenterZeroWeight"+idxStr)) params.dynamicScoreCenterZeroWeight = cfg.getDouble("dynamicScoreCenterZeroWeight"+idxStr, 0.0, 1.0);
     else if(cfg.contains("dynamicScoreCenterZeroWeight"))   params.dynamicScoreCenterZeroWeight = cfg.getDouble("dynamicScoreCenterZeroWeight",        0.0, 1.0);
@@ -561,9 +570,9 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("graphSearchCatchUpLeakProb"+idxStr)) params.graphSearchCatchUpLeakProb = cfg.getDouble("graphSearchCatchUpLeakProb"+idxStr, 0.0, 1.0);
     else if(cfg.contains("graphSearchCatchUpLeakProb"))   params.graphSearchCatchUpLeakProb = cfg.getDouble("graphSearchCatchUpLeakProb", 0.0, 1.0);
     else                                                  params.graphSearchCatchUpLeakProb = 0.0;
-    // if(cfg.contains("graphSearchCatchUpProp"+idxStr)) params.graphSearchCatchUpProp = cfg.getDouble("graphSearchCatchUpProp"+idxStr, 0.0, 1.0);
-    // else if(cfg.contains("graphSearchCatchUpProp"))   params.graphSearchCatchUpProp = cfg.getDouble("graphSearchCatchUpProp", 0.0, 1.0);
-    // else                                              params.graphSearchCatchUpProp = 0.0;
+    if(cfg.contains("graphSearchCatchUpProp"+idxStr)) params.graphSearchCatchUpProp = cfg.getDouble("graphSearchCatchUpProp"+idxStr, 0.0, 1.0);
+    else if(cfg.contains("graphSearchCatchUpProp"))   params.graphSearchCatchUpProp = cfg.getDouble("graphSearchCatchUpProp", 0.0, 1.0);
+    else                                              params.graphSearchCatchUpProp = 0.0;
 
     if(cfg.contains("rootNoiseEnabled"+idxStr)) params.rootNoiseEnabled = cfg.getBool("rootNoiseEnabled"+idxStr);
     else if(cfg.contains("rootNoiseEnabled"))   params.rootNoiseEnabled = cfg.getBool("rootNoiseEnabled");
