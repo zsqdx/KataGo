@@ -1077,11 +1077,15 @@ struct TRTErrorRecorder : IErrorRecorder {
 
 struct ComputeHandle {
   ComputeContext* ctx;
+  Logger* handleLogger;
 
   bool usingFP16;
   int maxBatchSize;
   int modelVersion;
   vector<pair<string, string>> debugOutputs;
+  vector<cudaGraphExec_t> cudaGraphExecsByBatchSize;
+  bool cudaGraphCaptureFailed;
+  int lastInputShapeBatchSize;
 
   TRTLogger trtLogger;
   TRTErrorRecorder trtErrorRecorder;
@@ -1098,9 +1102,13 @@ struct ComputeHandle {
     int maxBatchSz,
     bool requireExactNNLen) {
     ctx = context;
+    handleLogger = logger;
 
     maxBatchSize = maxBatchSz;
     modelVersion = loadedModel->modelDesc.modelVersion;
+    cudaGraphExecsByBatchSize.resize((size_t)maxBatchSize+1, NULL);
+    cudaGraphCaptureFailed = false;
+    lastInputShapeBatchSize = -1;
 
     // Certain minor versions of TensorRT uses a global logger, which is bad.
     // Since TensorRT maintains ABI compatibility between minor versions, a dynamic library mismatch
@@ -1362,6 +1370,10 @@ struct ComputeHandle {
   }
 
   ~ComputeHandle() {
+    for(cudaGraphExec_t graphExec: cudaGraphExecsByBatchSize) {
+      if(graphExec != NULL)
+        CUDA_ERR("~ComputeHandle", cudaGraphExecDestroy(graphExec));
+    }
     for(auto ptr: buffers) {
       CUDA_ERR("~ComputeHandle", cudaFree(ptr.second));
     }
@@ -1378,6 +1390,17 @@ struct ComputeHandle {
     } else {
       throw StringError(Global::strprintf("ComputeHandle: unknown tensor name %s", name));
     }
+  }
+
+  cudaGraphExec_t getCudaGraphExec(int batchSize) {
+    testAssert(batchSize >= 0 && batchSize <= maxBatchSize);
+    return cudaGraphExecsByBatchSize[(size_t)batchSize];
+  }
+
+  void setCudaGraphExec(int batchSize, cudaGraphExec_t graphExec) {
+    testAssert(batchSize >= 0 && batchSize <= maxBatchSize);
+    testAssert(cudaGraphExecsByBatchSize[(size_t)batchSize] == NULL);
+    cudaGraphExecsByBatchSize[(size_t)batchSize] = graphExec;
   }
 
   size_t getBufferBytes(const char* name) {
@@ -1514,6 +1537,58 @@ void NeuralNet::printDevices() {
   }
 }
 
+struct HostFloatBuffer {
+  float* ptr;
+  bool pinned;
+  unique_ptr<float[]> fallback;
+
+  HostFloatBuffer()
+    : ptr(NULL), pinned(false), fallback()
+  {}
+
+  ~HostFloatBuffer() {
+    if(pinned && ptr != NULL)
+      CUDA_ERR("~HostFloatBuffer", cudaFreeHost(ptr));
+  }
+
+  HostFloatBuffer(const HostFloatBuffer&) = delete;
+  HostFloatBuffer& operator=(const HostFloatBuffer&) = delete;
+
+  void allocate(size_t numElts) {
+    if(numElts == 0) {
+      ptr = NULL;
+      return;
+    }
+    cudaError_t status = cudaMallocHost(reinterpret_cast<void**>(&ptr), numElts * sizeof(float));
+    if(status == cudaSuccess) {
+      pinned = true;
+    }
+    else {
+      cudaGetLastError();
+      ptr = NULL;
+      pinned = false;
+      fallback = make_unique<float[]>(numElts);
+      ptr = fallback.get();
+    }
+  }
+
+  float* get() {
+    return ptr;
+  }
+
+  const float* get() const {
+    return ptr;
+  }
+
+  float& operator[](size_t idx) {
+    return ptr[idx];
+  }
+
+  const float& operator[](size_t idx) const {
+    return ptr[idx];
+  }
+};
+
 struct InputBuffers {
   int maxBatchSize;
 
@@ -1546,15 +1621,15 @@ struct InputBuffers {
   size_t scoreValueResultBufferBytes;
   size_t ownershipResultBufferBytes;
 
-  unique_ptr<float[]> maskInputs;           // Host pointer
-  unique_ptr<float[]> spatialInputs;        // Host pointer
-  unique_ptr<float[]> globalInputs;  // Host pointer
-  unique_ptr<float[]> metaInputs;  // Host pointer
-  unique_ptr<float[]> policyPassResults;    // Host pointer
-  unique_ptr<float[]> policyResults;        // Host pointer
-  unique_ptr<float[]> valueResults;         // Host pointer
-  unique_ptr<float[]> scoreValueResults;    // Host pointer
-  unique_ptr<float[]> ownershipResults;     // Host pointer
+  HostFloatBuffer maskInputs;           // Host pointer
+  HostFloatBuffer spatialInputs;        // Host pointer
+  HostFloatBuffer globalInputs;         // Host pointer
+  HostFloatBuffer metaInputs;           // Host pointer
+  HostFloatBuffer policyPassResults;    // Host pointer
+  HostFloatBuffer policyResults;        // Host pointer
+  HostFloatBuffer valueResults;         // Host pointer
+  HostFloatBuffer scoreValueResults;    // Host pointer
+  HostFloatBuffer ownershipResults;     // Host pointer
 
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
@@ -1602,15 +1677,15 @@ struct InputBuffers {
     scoreValueResultBufferBytes = maxBatchSize * singleScoreValueResultBytes;
     ownershipResultBufferBytes = maxBatchSize * singleOwnershipResultBytes;
 
-    maskInputs = make_unique<float[]>(maxBatchSize * singleMaskElts);
-    spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
-    globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
-    metaInputs = make_unique<float[]>(maxBatchSize * singleInputMetaElts);
-    policyPassResults = make_unique<float[]>(maxBatchSize * singlePolicyPassResultElts);
-    policyResults = make_unique<float[]>(maxBatchSize * singlePolicyResultElts);
-    valueResults = make_unique<float[]>(maxBatchSize * singleValueResultElts);
-    scoreValueResults = make_unique<float[]>(maxBatchSize * singleScoreValueResultElts);
-    ownershipResults = make_unique<float[]>(maxBatchSize * singleOwnershipResultElts);
+    maskInputs.allocate(maxBatchSize * singleMaskElts);
+    spatialInputs.allocate(maxBatchSize * singleInputElts);
+    globalInputs.allocate(maxBatchSize * singleInputGlobalElts);
+    metaInputs.allocate(maxBatchSize * singleInputMetaElts);
+    policyPassResults.allocate(maxBatchSize * singlePolicyPassResultElts);
+    policyResults.allocate(maxBatchSize * singlePolicyResultElts);
+    valueResults.allocate(maxBatchSize * singleValueResultElts);
+    scoreValueResults.allocate(maxBatchSize * singleScoreValueResultElts);
+    ownershipResults.allocate(maxBatchSize * singleOwnershipResultElts);
   }
 
   InputBuffers() = delete;
@@ -1624,6 +1699,176 @@ InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int 
 
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
+}
+
+static void setInputShapesForBatch(ComputeHandle* gpuHandle, InputBuffers* inputBuffers, int batchSize, int numMetaFeatures) {
+  if(gpuHandle->lastInputShapeBatchSize == batchSize)
+    return;
+
+  auto maskInputDims = gpuHandle->getBufferDynamicShape("InputMask", batchSize);
+  auto spatialInputDims = gpuHandle->getBufferDynamicShape("InputSpatial", batchSize);
+  auto globalInputDims = gpuHandle->getBufferDynamicShape("InputGlobal", batchSize);
+
+  gpuHandle->exec->setInputShape("InputMask", maskInputDims);
+  gpuHandle->exec->setInputShape("InputSpatial", spatialInputDims);
+  gpuHandle->exec->setInputShape("InputGlobal", globalInputDims);
+
+  if(numMetaFeatures > 0) {
+    auto metaInputDims = gpuHandle->getBufferDynamicShape("InputMeta", batchSize);
+    gpuHandle->exec->setInputShape("InputMeta", metaInputDims);
+  }
+
+  (void)inputBuffers;
+  gpuHandle->lastInputShapeBatchSize = batchSize;
+}
+
+static cudaError_t enqueueInputCopies(ComputeHandle* gpuHandle, InputBuffers* inputBuffers, int batchSize, int numMetaFeatures, cudaStream_t stream) {
+  cudaError_t status = cudaMemcpyAsync(
+    gpuHandle->getBuffer("InputMask"),
+    inputBuffers->maskInputs.get(),
+    inputBuffers->singleMaskBytes * batchSize,
+    cudaMemcpyHostToDevice,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    gpuHandle->getBuffer("InputSpatial"),
+    inputBuffers->spatialInputs.get(),
+    inputBuffers->singleInputBytes * batchSize,
+    cudaMemcpyHostToDevice,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    gpuHandle->getBuffer("InputGlobal"),
+    inputBuffers->globalInputs.get(),
+    inputBuffers->singleInputGlobalBytes * batchSize,
+    cudaMemcpyHostToDevice,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  if(numMetaFeatures > 0) {
+    status = cudaMemcpyAsync(
+      gpuHandle->getBuffer("InputMeta"),
+      inputBuffers->metaInputs.get(),
+      inputBuffers->singleInputMetaBytes * batchSize,
+      cudaMemcpyHostToDevice,
+      stream);
+    if(status != cudaSuccess)
+      return status;
+  }
+
+  return cudaSuccess;
+}
+
+static cudaError_t enqueueOutputCopies(ComputeHandle* gpuHandle, InputBuffers* inputBuffers, int batchSize, cudaStream_t stream) {
+  cudaError_t status = cudaMemcpyAsync(
+    inputBuffers->policyPassResults.get(),
+    gpuHandle->getBuffer("OutputPolicyPass"),
+    inputBuffers->singlePolicyPassResultBytes * batchSize,
+    cudaMemcpyDeviceToHost,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    inputBuffers->policyResults.get(),
+    gpuHandle->getBuffer("OutputPolicy"),
+    inputBuffers->singlePolicyResultBytes * batchSize,
+    cudaMemcpyDeviceToHost,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    inputBuffers->valueResults.get(),
+    gpuHandle->getBuffer("OutputValue"),
+    inputBuffers->singleValueResultBytes * batchSize,
+    cudaMemcpyDeviceToHost,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    inputBuffers->scoreValueResults.get(),
+    gpuHandle->getBuffer("OutputScoreValue"),
+    inputBuffers->singleScoreValueResultBytes * batchSize,
+    cudaMemcpyDeviceToHost,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  status = cudaMemcpyAsync(
+    inputBuffers->ownershipResults.get(),
+    gpuHandle->getBuffer("OutputOwnership"),
+    inputBuffers->singleOwnershipResultBytes * batchSize,
+    cudaMemcpyDeviceToHost,
+    stream);
+  if(status != cudaSuccess)
+    return status;
+
+  return cudaSuccess;
+}
+
+static bool captureCudaGraphForBatch(ComputeHandle* gpuHandle, InputBuffers* inputBuffers, int batchSize, int numMetaFeatures) {
+  if(gpuHandle->cudaGraphCaptureFailed || gpuHandle->getCudaGraphExec(batchSize) != NULL)
+    return false;
+
+  cudaStream_t stream = cudaStreamPerThread;
+  setInputShapesForBatch(gpuHandle,inputBuffers,batchSize,numMetaFeatures);
+  cudaError_t status = cudaStreamSynchronize(stream);
+  if(status != cudaSuccess) {
+    if(gpuHandle->handleLogger != NULL)
+      gpuHandle->handleLogger->write("TensorRT backend: CUDA graph capture disabled before capture: " + string(cudaGetErrorString(status)));
+    gpuHandle->cudaGraphCaptureFailed = true;
+    return false;
+  }
+
+  cudaGraph_t graph = NULL;
+  cudaGraphExec_t graphExec = NULL;
+
+  status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+  if(status != cudaSuccess) {
+    if(gpuHandle->handleLogger != NULL)
+      gpuHandle->handleLogger->write("TensorRT backend: CUDA graph capture disabled at begin capture: " + string(cudaGetErrorString(status)));
+    gpuHandle->cudaGraphCaptureFailed = true;
+    return false;
+  }
+
+  status = enqueueInputCopies(gpuHandle,inputBuffers,batchSize,numMetaFeatures,stream);
+  if(status == cudaSuccess && !gpuHandle->exec->enqueueV3(stream))
+    status = cudaErrorUnknown;
+  if(status == cudaSuccess)
+    status = enqueueOutputCopies(gpuHandle,inputBuffers,batchSize,stream);
+
+  cudaError_t endStatus = cudaStreamEndCapture(stream, &graph);
+  if(status != cudaSuccess || endStatus != cudaSuccess || graph == NULL) {
+    if(graph != NULL)
+      cudaGraphDestroy(graph);
+    if(gpuHandle->handleLogger != NULL) {
+      string err = status != cudaSuccess ? cudaGetErrorString(status) : cudaGetErrorString(endStatus);
+      gpuHandle->handleLogger->write("TensorRT backend: CUDA graph capture disabled while capturing batch size " + Global::intToString(batchSize) + ": " + err);
+    }
+    gpuHandle->cudaGraphCaptureFailed = true;
+    return false;
+  }
+
+  status = cudaGraphInstantiate(&graphExec, graph, 0);
+  cudaGraphDestroy(graph);
+  if(status != cudaSuccess || graphExec == NULL) {
+    if(graphExec != NULL)
+      cudaGraphExecDestroy(graphExec);
+    if(gpuHandle->handleLogger != NULL)
+      gpuHandle->handleLogger->write("TensorRT backend: CUDA graph instantiate failed for batch size " + Global::intToString(batchSize) + ": " + string(cudaGetErrorString(status)));
+    gpuHandle->cudaGraphCaptureFailed = true;
+    return false;
+  }
+
+  gpuHandle->setCudaGraphExec(batchSize, graphExec);
+  return true;
 }
 
 void NeuralNet::getOutput(
@@ -1696,88 +1941,22 @@ void NeuralNet::getOutput(
   const int numPolicyChannels = inputBuffers->singlePolicyPassResultElts;
   assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * nnXLen * nnYLen);
 
-  // Transfers from host memory to device memory are asynchronous with respect to the host
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpyAsync(
-      gpuHandle->getBuffer("InputMask"),
-      inputBuffers->maskInputs.get(),
-      inputBuffers->singleMaskBytes * batchSize,
-      cudaMemcpyHostToDevice));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpyAsync(
-      gpuHandle->getBuffer("InputSpatial"),
-      inputBuffers->spatialInputs.get(),
-      inputBuffers->singleInputBytes * batchSize,
-      cudaMemcpyHostToDevice));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpyAsync(
-      gpuHandle->getBuffer("InputGlobal"),
-      inputBuffers->globalInputs.get(),
-      inputBuffers->singleInputGlobalBytes * batchSize,
-      cudaMemcpyHostToDevice));
-  if(numMetaFeatures > 0) {
-    CUDA_ERR(
-      "getOutput",
-      cudaMemcpyAsync(
-        gpuHandle->getBuffer("InputMeta"),
-        inputBuffers->metaInputs.get(),
-        inputBuffers->singleInputMetaBytes * batchSize,
-        cudaMemcpyHostToDevice));
+  cudaStream_t stream = cudaStreamPerThread;
+  cudaGraphExec_t graphExec = gpuHandle->getCudaGraphExec(batchSize);
+  if(graphExec != NULL) {
+    setInputShapesForBatch(gpuHandle,inputBuffers,batchSize,numMetaFeatures);
+    CUDA_ERR("getOutput", cudaGraphLaunch(graphExec, stream));
+    CUDA_ERR("getOutput", cudaStreamSynchronize(stream));
   }
-
-  auto maskInputDims = gpuHandle->getBufferDynamicShape("InputMask", batchSize);
-  auto spatialInputDims = gpuHandle->getBufferDynamicShape("InputSpatial", batchSize);
-  auto globalInputDims = gpuHandle->getBufferDynamicShape("InputGlobal", batchSize);
-
-  gpuHandle->exec->setInputShape("InputMask", maskInputDims);
-  gpuHandle->exec->setInputShape("InputSpatial", spatialInputDims);
-  gpuHandle->exec->setInputShape("InputGlobal", globalInputDims);
-
-  if(numMetaFeatures > 0) {
-    auto metaInputDims = gpuHandle->getBufferDynamicShape("InputMeta", batchSize);
-    gpuHandle->exec->setInputShape("InputMeta", metaInputDims);
+  else {
+    setInputShapesForBatch(gpuHandle,inputBuffers,batchSize,numMetaFeatures);
+    CUDA_ERR("getOutput", enqueueInputCopies(gpuHandle,inputBuffers,batchSize,numMetaFeatures,stream));
+    if(!gpuHandle->exec->enqueueV3(stream))
+      throw StringError("TensorRT backend: failed to enqueue network");
+    CUDA_ERR("getOutput", enqueueOutputCopies(gpuHandle,inputBuffers,batchSize,stream));
+    CUDA_ERR("getOutput", cudaStreamSynchronize(stream));
+    captureCudaGraphForBatch(gpuHandle,inputBuffers,batchSize,numMetaFeatures);
   }
-
-  gpuHandle->exec->enqueueV3(cudaStreamPerThread);
-
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->policyPassResults.get(),
-      gpuHandle->getBuffer("OutputPolicyPass"),
-      inputBuffers->singlePolicyPassResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->policyResults.get(),
-      gpuHandle->getBuffer("OutputPolicy"),
-      inputBuffers->singlePolicyResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->valueResults.get(),
-      gpuHandle->getBuffer("OutputValue"),
-      inputBuffers->singleValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->scoreValueResults.get(),
-      gpuHandle->getBuffer("OutputScoreValue"),
-      inputBuffers->singleScoreValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->ownershipResults.get(),
-      gpuHandle->getBuffer("OutputOwnership"),
-      inputBuffers->singleOwnershipResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
 
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
