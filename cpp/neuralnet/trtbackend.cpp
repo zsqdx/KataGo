@@ -146,7 +146,7 @@ struct ModelParser {
   ModelParser& operator=(const ModelParser&) = delete;
 
   // Bump this when between katago versions we want to forcibly drop old timing caches and plan caches.
-  static constexpr int tuneSalt = 7;
+  static constexpr int tuneSalt = 7006;
 
   unique_ptr<TRTModel> build(
     unique_ptr<INetworkDefinition> net,
@@ -563,13 +563,6 @@ struct ModelParser {
     auto sv3MulLayer = buildMatMulLayer(v2ActivationLayer->getOutput(0), &desc->sv3Mul, true);
     auto sv3BiasLayer = buildMatBiasLayer(sv3MulLayer->getOutput(0), &desc->sv3Bias, true);
 
-    // So that mask layer can be omitted
-    testAssert(desc->vOwnershipConv.convXSize == 1);
-    testAssert(desc->vOwnershipConv.convYSize == 1);
-
-    auto vOwnershipConvLayer = buildConvLayer(v1MaskLayer->getOutput(0), &desc->vOwnershipConv, true);
-    auto vOwnershipCastLayer = applyCastLayer(vOwnershipConvLayer, DataType::kFLOAT);
-
     auto outputValue = v3BiasLayer->getOutput(0);
     network->markOutput(*outputValue);
     outputValue->setName("OutputValue");
@@ -582,16 +575,9 @@ struct ModelParser {
     outputScoreValue->setType(DataType::kFLOAT);
     outputScoreValue->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
 
-    auto outputOwnership = vOwnershipCastLayer->getOutput(0);
-    network->markOutput(*outputOwnership);
-    outputOwnership->setName("OutputOwnership");
-    outputOwnership->setType(DataType::kFLOAT);
-    outputOwnership->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
-
     auto modelDesc = &model->rawModel->modelDesc;
     testAssert(outputValue->getDimensions().d[1] == modelDesc->numValueChannels);
     testAssert(outputScoreValue->getDimensions().d[1] == modelDesc->numScoreValueChannels);
-    testAssert(outputOwnership->getDimensions().d[1] == modelDesc->numOwnershipChannels);
   }
 
 
@@ -1380,6 +1366,10 @@ struct ComputeHandle {
     }
   }
 
+  bool hasBuffer(const char* name) const {
+    return buffers.find(name) != buffers.end();
+  }
+
   size_t getBufferBytes(const char* name) {
     auto dims = engine->getTensorShape(name);
     if(dims.nbDims != -1) {
@@ -1680,7 +1670,9 @@ void NeuralNet::getOutput(
   assert(inputBuffers->singlePolicyResultElts == gpuHandle->getBufferRowElts("OutputPolicy"));
   assert(inputBuffers->singleValueResultElts == gpuHandle->getBufferRowElts("OutputValue"));
   assert(inputBuffers->singleScoreValueResultElts == gpuHandle->getBufferRowElts("OutputScoreValue"));
-  assert(inputBuffers->singleOwnershipResultElts == gpuHandle->getBufferRowElts("OutputOwnership"));
+  const bool hasOwnershipOutput = gpuHandle->hasBuffer("OutputOwnership");
+  if(hasOwnershipOutput)
+    assert(inputBuffers->singleOwnershipResultElts == gpuHandle->getBufferRowElts("OutputOwnership"));
 
   assert(inputBuffers->inputMaskBufferBytes == gpuHandle->getBufferBytes("InputMask"));
   assert(inputBuffers->inputSpatialBufferBytes == gpuHandle->getBufferBytes("InputSpatial"));
@@ -1691,7 +1683,8 @@ void NeuralNet::getOutput(
   assert(inputBuffers->policyResultBufferBytes == gpuHandle->getBufferBytes("OutputPolicy"));
   assert(inputBuffers->valueResultBufferBytes == gpuHandle->getBufferBytes("OutputValue"));
   assert(inputBuffers->scoreValueResultBufferBytes == gpuHandle->getBufferBytes("OutputScoreValue"));
-  assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
+  if(hasOwnershipOutput)
+    assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
 
   const int numPolicyChannels = inputBuffers->singlePolicyPassResultElts;
   assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * nnXLen * nnYLen);
@@ -1771,13 +1764,15 @@ void NeuralNet::getOutput(
       gpuHandle->getBuffer("OutputScoreValue"),
       inputBuffers->singleScoreValueResultBytes * batchSize,
       cudaMemcpyDeviceToHost));
-  CUDA_ERR(
-    "getOutput",
-    cudaMemcpy(
-      inputBuffers->ownershipResults.get(),
-      gpuHandle->getBuffer("OutputOwnership"),
-      inputBuffers->singleOwnershipResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+  if(hasOwnershipOutput) {
+    CUDA_ERR(
+      "getOutput",
+      cudaMemcpy(
+        inputBuffers->ownershipResults.get(),
+        gpuHandle->getBuffer("OutputOwnership"),
+        inputBuffers->singleOwnershipResultBytes * batchSize,
+        cudaMemcpyDeviceToHost));
+  }
 
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
@@ -1826,10 +1821,15 @@ void NeuralNet::getOutput(
     // As above, these are NOT actually from white's perspective, but rather the player to move.
     // As usual the client does the postprocessing.
     if(output->whiteOwnerMap != NULL) {
-      const float* ownershipSrcBuf = &inputBuffers->ownershipResults[row * nnXLen * nnYLen];
       assert(inputBuffers->singleOwnershipResultElts == nnXLen * nnYLen);
-      SymmetryHelpers::copyOutputsWithSymmetry(
-        ownershipSrcBuf, output->whiteOwnerMap, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
+      if(hasOwnershipOutput) {
+        const float* ownershipSrcBuf = &inputBuffers->ownershipResults[row * nnXLen * nnYLen];
+        SymmetryHelpers::copyOutputsWithSymmetry(
+          ownershipSrcBuf, output->whiteOwnerMap, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
+      }
+      else {
+        std::fill(output->whiteOwnerMap, output->whiteOwnerMap + nnXLen * nnYLen, 0.0f);
+      }
     }
 
     int numScoreValueChannels = inputBuffers->singleScoreValueResultElts;
